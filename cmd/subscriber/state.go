@@ -8,7 +8,6 @@ import (
 )
 
 type TradesWindow struct {
-	// Aggregated over the last UI interval
 	Count     int
 	BuyCount  int
 	SellCount int
@@ -23,8 +22,13 @@ type TradesWindow struct {
 type AppState struct {
 	cfg Config
 
-	mu    sync.Mutex
-	dirty bool
+	mu sync.Mutex
+
+	conn struct {
+		Connected bool
+		At        time.Time
+		Err       string
+	}
 
 	orderbook struct {
 		ev  OrderbookEvent
@@ -35,9 +39,12 @@ type AppState struct {
 }
 
 type ViewModel struct {
-	Now time.Time
-
+	Now       time.Time
 	BrokerURL string
+
+	ConnConnected bool
+	ConnAt        time.Time
+	ConnErr       string
 
 	OrderbookTopic string
 	TradesTopic    string
@@ -56,19 +63,17 @@ type OrderbookView struct {
 type TradesView struct {
 	Topic       string
 	Source      string
-	PublishedAt int64 // last trade publishedAt
+	PublishedAt int64
 
 	Symbol string
 
-	// last trade
 	Side    string
 	Price   string
 	Qty     string
 	TradeID int64
 
-	TradeTime int64 // from exchange message
+	TradeTime int64
 
-	// window stats (last interval)
 	Count     int
 	BuyCount  int
 	SellCount int
@@ -81,13 +86,25 @@ func NewAppState(cfg Config) *AppState {
 	return &AppState{cfg: cfg}
 }
 
+func (s *AppState) SetConnStatus(st ConnStatus) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.conn.Connected = st.Connected
+	s.conn.At = st.At
+	if st.Err != nil {
+		s.conn.Err = st.Err.Error()
+	} else {
+		s.conn.Err = ""
+	}
+}
+
 func (s *AppState) UpdateOrderbook(ev OrderbookEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.orderbook.ev = ev
 	s.orderbook.has = true
-	s.dirty = true
 }
 
 func (s *AppState) UpdateTrade(ev TradeEvent) {
@@ -104,26 +121,21 @@ func (s *AppState) UpdateTrade(ev TradeEvent) {
 		s.trades.SellCount++
 	}
 
-	// Best-effort sums; if parse failed we stored 0, so it just won't contribute.
 	s.trades.BaseQtySum += ev.QtyF
 	s.trades.QuoteQtySum += ev.PriceF * ev.QtyF
-
-	s.dirty = true
 }
 
-// SnapshotAndResetWindow returns (view, true) if there is anything new to render.
-// It also resets the trades window stats (but keeps "last trade" shown until replaced).
-func (s *AppState) SnapshotAndResetWindow() (ViewModel, bool) {
+func (s *AppState) SnapshotAndResetWindow() ViewModel {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if !s.dirty {
-		return ViewModel{}, false
-	}
-
 	vm := ViewModel{
-		Now:            time.Now(),
-		BrokerURL:      s.cfg.BrokerURL,
+		Now:           time.Now(),
+		BrokerURL:     s.cfg.BrokerURL,
+		ConnConnected: s.conn.Connected,
+		ConnAt:        s.conn.At,
+		ConnErr:       s.conn.Err,
+
 		OrderbookTopic: s.cfg.OrderbookTopic,
 		TradesTopic:    s.cfg.TradesTopic,
 	}
@@ -149,6 +161,20 @@ func (s *AppState) SnapshotAndResetWindow() (ViewModel, bool) {
 			Qty:         last.Trade.Qty,
 			TradeID:     last.Trade.TradeID,
 			TradeTime:   last.Trade.TradeTime,
+
+			Count:       s.trades.Count,
+			BuyCount:    s.trades.BuyCount,
+			SellCount:   s.trades.SellCount,
+			BaseQtySum:  s.trades.BaseQtySum,
+			QuoteQtySum: s.trades.QuoteQtySum,
+		}
+	} else if s.cfg.TradesTopic != "" {
+		// trades enabled but no trade yet: still show window stats (likely zeros)
+		vm.Trades = &TradesView{
+			Topic:       s.cfg.TradesTopic,
+			Source:      "",
+			PublishedAt: 0,
+			Symbol:      "",
 			Count:       s.trades.Count,
 			BuyCount:    s.trades.BuyCount,
 			SellCount:   s.trades.SellCount,
@@ -157,13 +183,12 @@ func (s *AppState) SnapshotAndResetWindow() (ViewModel, bool) {
 		}
 	}
 
-	// Reset window stats for next interval, but keep last trade.
+	// Reset window stats each tick (keep last trade)
 	s.trades.Count = 0
 	s.trades.BuyCount = 0
 	s.trades.SellCount = 0
 	s.trades.BaseQtySum = 0
 	s.trades.QuoteQtySum = 0
 
-	s.dirty = false
-	return vm, true
+	return vm
 }

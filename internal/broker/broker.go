@@ -107,16 +107,10 @@ func (b *Broker) readLoop(c *Client) {
 }
 
 func (b *Broker) writeLoop(c *Client) {
-	for {
-		select {
-		case data, ok := <-c.send:
-			if !ok {
-				return
-			}
-			// write without write deadlines or ping heartbeats
-			if err := c.conn.WriteMessage(websocket.TextMessage, data); err != nil {
-				return
-			}
+	for data := range c.send {
+		// write without write deadlines or ping heartbeats
+		if err := c.conn.WriteMessage(websocket.TextMessage, data); err != nil {
+			return
 		}
 	}
 }

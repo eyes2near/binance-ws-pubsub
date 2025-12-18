@@ -9,7 +9,6 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-// clearScreen clears the terminal and moves cursor to top-left (ANSI)
 func clearScreen() {
 	fmt.Print("\x1b[2J\x1b[H")
 }
@@ -17,7 +16,22 @@ func clearScreen() {
 func Render(ui *InPlaceUI, vm ViewModel, maxRows int) {
 	var b bytes.Buffer
 
-	// fmt.Fprintf(&b, "Broker: %s   Now: %s\n", vm.BrokerURL, vm.Now.Format(time.RFC3339))
+	// Connection status line
+	connLine := "DISCONNECTED"
+	if vm.ConnConnected {
+		connLine = "CONNECTED"
+	}
+	if !vm.ConnConnected && vm.ConnErr != "" {
+		connLine = fmt.Sprintf("DISCONNECTED (retrying) err=%s", vm.ConnErr)
+	}
+	connAt := ""
+	if !vm.ConnAt.IsZero() {
+		connAt = vm.ConnAt.Format(time.RFC3339)
+	}
+
+	fmt.Fprintf(&b, "Broker: %s   Conn: %s   ConnAt: %s   Now: %s\n",
+		vm.BrokerURL, connLine, connAt, vm.Now.Format(time.RFC3339))
+
 	b.WriteString(strings.Repeat("=", 80) + "\n")
 
 	if vm.OrderbookTopic != "" {
@@ -86,6 +100,13 @@ func renderOrderbookBlock(b *bytes.Buffer, ob OrderbookView, maxRows int) {
 }
 
 func renderTradesBlock(b *bytes.Buffer, tr TradesView) {
+	if tr.PublishedAt == 0 {
+		fmt.Fprintf(b, "[Trades] topic=%s (waiting...)\n", tr.Topic)
+		fmt.Fprintf(b, "Last 1s: trades=%d  buy=%d  sell=%d  baseQty=%.6f  quoteQty=%.6f\n",
+			tr.Count, tr.BuyCount, tr.SellCount, tr.BaseQtySum, tr.QuoteQtySum)
+		return
+	}
+
 	tPub := time.UnixMilli(tr.PublishedAt)
 	tTrade := time.UnixMilli(tr.TradeTime)
 
