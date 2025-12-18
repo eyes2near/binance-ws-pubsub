@@ -5,4 +5,4 @@
 .vscode/
 
 # Temp files
-.tmp/*~
+.tmp/

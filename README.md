@@ -1,88 +1,166 @@
 # binance-ws-pubsub
 
-快速入门：如何运行 `broker`、`publisher` 和 `subscriber` (Windows PowerShell)
+一个轻量的 WebSocket Pub/Sub Broker + Binance 数据 Publisher + 终端 Subscriber。
+
+- **broker**: WebSocket 服务器，负责 topic 订阅与事件广播。
+- **publisher**: 从 Binance（Spot / COIN-M）拉取数据并发布到 broker。
+  - 支持发布 **订单簿 band 快照**。
+  - 支持发布 **trade 流**。
+- **subscriber**: 连接 broker 订阅 topic，在终端原地刷新显示。
+  - 支持显示 **订单簿 band 快照**。
+  - 支持显示 **trade 流（每 1 秒聚合/刷新一次）**。
+
+---
 
 ## 先决条件
-- 已安装 Go 工具链 (推荐 go 1.20+)
-- 可以访问币安网络 (publisher 需要)
 
-## 推荐顺序
-1. 启动 broker (WebSocket 服务器)
-2. 启动 publisher (从币安获取订单簿快照)
-3. 启动 subscriber (订阅主题并显示快照)
+- Go 工具链 (推荐 Go 1.20+)。
+- 能访问 Binance 网络 (publisher 需要)。
 
-## 运行组件
+---
 
-在单独的 PowerShell 终端中按顺序运行每个组件。
+## 推荐运行顺序
+
+1.  启动 **broker** (WebSocket 服务器)。
+2.  启动 **publisher** (从 Binance 拉数据并 publish 到 broker)。
+3.  启动 **subscriber** (subscribe topic 并显示)。
+
+---
+
+## 运行组件 (Windows PowerShell)
+
+在 **不同的 PowerShell 窗口** 中按顺序执行以下命令。
 
 ### 1. 启动 Broker
 
-Broker 是 WebSocket 服务器，负责在发布者和订阅者之间中继消息。
+Broker 默认监听 `ws://localhost:8080/ws`。
 
 ```powershell
-# 默认监听 :8080
 go run ./cmd/broker
 ```
-- 使用 `-listen` 标志更改监听地址 (例如, `-listen :9000`)。
+
+如需修改监听地址，请使用 `-listen` 参数。查看帮助获取更多信息：
+
+```powershell
+go run ./cmd/broker -h
+```
 
 ### 2. 启动 Publisher
 
-Publisher 从币安获取订单簿数据并将其发布到 Broker。
+Publisher 默认连接 Broker (`ws://localhost:8080/ws`)。
 
-Publisher 支持两种市场模式: `spot` (现货) 和 `coin-m` (币本位合约)。
+#### Topic 约定
 
-#### 现货市场 (默认模式)
+Publisher 会根据市场和数据类型生成 Topic，格式如下：
+- **订单簿 band**: `orderbook.band.{SYMBOL}`
+- **Trades**: `trades.{SYMBOL}`
 
-- `-market=spot` 是默认值, 可以省略。
-- `-symbol` 应为完整的交易对 (例如 `BTCUSDT`)。
+`{SYMBOL}` 的具体内容取决于市场：
+- **Spot**: 输入的交易对 (e.g., `BTCUSDT`)。
+- **COIN-M**: 合约符号 (e.g., `BTCUSD_231229`)，由 publisher 自动解析。
+
+**建议**: 启动 publisher 后，直接从其控制台输出中复制 topic 字符串给 subscriber 使用。
+
+#### 市场模式
+
+**A) 现货 (Spot) - 默认模式**
 
 ```powershell
-# 订阅 BTCUSDT 现货市场的订单簿
-go run ./cmd/publisher -symbol BTCUSDT
+# 只发布 BTCUSDT 的订单簿 band (默认行为)
+go run ./cmd/publisher -market spot -symbol BTCUSDT
+
+# 同时发布 orderbook 和 trades
+go run ./cmd/publisher -market spot -symbol BTCUSDT -trades=true
+
+# 只发布 trades
+go run ./cmd/publisher -market spot -symbol BTCUSDT -orderbook=false -trades=true
 ```
 
-#### COIN-M 市场 (币本位合约)
+**B) 币本位交割 (COIN-M)**
 
-- 使用 `-market coin-m` 来激活。
-- `-symbol` 应为基础币种 (例如 `BTC`, `ETH`)。
-- `-contract` 用于指定合约类型: `current` (当季) 或 `next` (次季)。
+使用 `-market coin-m`，并指定 `-symbol` (基础币种) 和 `-contract` (`current` 或 `next`)。
 
 ```powershell
-# 订阅 BTC/USD 当季合约的订单簿
+# 发布 BTC/USD 当季合约的订单簿 band
 go run ./cmd/publisher -market coin-m -symbol BTC -contract current
 
-# 订阅 ETH/USD 次季合约的订单簿
+# 发布 ETH/USD 次季合约的订单簿 band
 go run ./cmd/publisher -market coin-m -symbol ETH -contract next
+
+# 同时发布 COIN-M 合约的 orderbook 和 trades
+go run ./cmd/publisher -market coin-m -symbol BTC -contract current -trades=true
 ```
+
+#### Publisher 常用参数
+
+```powershell
+go run ./cmd/publisher -h
+```
+- `-broker`: Broker 的 WebSocket 地址。
+- `-market`: `spot` / `coin-m`。
+- `-symbol`: 市场对应的交易对或基础币种。
+- `-contract`: `current` / `next` (仅用于 coin-m)。
+- `-orderbook`: 是否发布 orderbook (默认 `true`)。
+- `-trades`: 是否发布 trades (默认 `false`)。
 
 ### 3. 启动 Subscriber
 
-Subscriber 连接到 Broker，订阅一个主题并实时显示订单簿快照。
+Subscriber 可以同时订阅订单簿和 trades topic。UI 每秒刷新一次，trades 数据会按秒聚合，以避免信息滚动过快。
 
-- `-topic` 必须与 `publisher` 生成的主题匹配。主题格式为 `orderbook.band.{SYMBOL}`。
+#### 订阅示例
 
 ```powershell
-# 订阅 BTCUSDT 现货主题
+# 只订阅订单簿
 go run ./cmd/subscriber -topic orderbook.band.BTCUSDT
 
-# 订阅 BTC/USD 当季合约主题 (注意合约符号会自动解析)
-# 你需要先运行publisher来查看确切的符号, 例如 BTCUSD_231229
-go run ./cmd/subscriber -topic orderbook.band.BTCUSD_231229
+# 同时订阅订单簿和 trades (推荐)
+go run ./cmd/subscriber -topic orderbook.band.BTCUSDT -trades-topic trades.BTCUSDT
+
+# 只订阅 trades
+go run ./cmd/subscriber -topic "" -trades-topic trades.BTCUSDT
+
+# 订阅 COIN-M 合约 (SYMBOL 从 publisher 获取)
+go run ./cmd/subscriber -topic orderbook.band.BTCUSD_231229 -trades-topic trades.BTCUSD_231229
 ```
 
-## 注意事项
-- `publisher` 和 `subscriber` 默认连接到 Broker 的 `ws://localhost:8080/ws`。使用 `-broker` 标志来更改地址。
-- 在终端中按 `Ctrl+C` 可以平滑地停止任何进程。
-
-## 后台运行 (可选)
-- 最简单的方法是打开单独的终端并运行上面的命令。
-- 对于 Windows 上的脚本/自动化，请考虑使用 `Start-Process` 在单独的窗口中生成进程。
-
-### `Start-Process` 示例 (PowerShell)
+#### Subscriber 常用参数
 
 ```powershell
-cd C:\Users\wangn\go-projects\binance-ws-pubsub
+go run ./cmd/subscriber -h
+```
+- `-broker`: Broker 的 WebSocket 地址。
+- `-topic`: 订单簿 topic (可为空)。
+- `-trades-topic`: Trades topic (可为空)。
+- `-rows`: 订单簿显示的行数 (默认 20)。
+- `-interval`: UI 刷新间隔 (默认 `1s`)。
+
+---
+
+## 注意事项
+
+- **平滑退出**: 在任何组件的窗口中按 `Ctrl+C` 即可平滑退出。
+- **显示问题**: 如果 subscriber 不在原地刷新而是持续向下滚动，可能是终端对 ANSI/VT 控制符的支持不佳。本项目已针对此问题优化，在 Windows Terminal, PowerShell, VSCode Terminal 中通常表现良好。
+
+---
+
+## 后台运行 (可选)
+
+你可以在后台启动所有组件。首先，请在 PowerShell 中进入项目根目录：
+
+```powershell
+cd {project_home}
+```
+*将 `{project_home}` 替换为你的项目实际路径。*
+
+然后执行以下命令：
+
+```powershell
+# 启动 Broker
 Start-Process powershell -ArgumentList '-NoExit', '-Command', 'go run ./cmd/broker'
-Start-Process powershell -ArgumentList '-NoExit', '-Command', 'go run ./cmd/publisher -symbol BTCUSDT'
-Start-Process powershell -ArgumentList '-NoExit', '-Command', 'go run ./cmd/subscriber -topic orderbook.band.BTCUSDT'
+
+# 启动 Publisher (以 Spot 市场为例)
+Start-Process powershell -ArgumentList '-NoExit', '-Command', 'go run ./cmd/publisher -market spot -symbol BTCUSDT -trades=true'
+
+# 启动 Subscriber
+Start-Process powershell -ArgumentList '-NoExit', '-Command', 'go run ./cmd/subscriber -topic orderbook.band.BTCUSDT -trades-topic trades.BTCUSDT'
 ```
